@@ -1,10 +1,15 @@
 package sectorstorage
 
 import (
+	"bytes"
 	"context"
+	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"runtime"
+	"strconv"
+	"strings"
 
 	"github.com/elastic/go-sysinfo"
 	"github.com/hashicorp/go-multierror"
@@ -61,6 +66,7 @@ type localWorkerPathProvider struct {
 }
 
 func (l *localWorkerPathProvider) AcquireSector(ctx context.Context, sector abi.SectorID, existing stores.SectorFileType, allocate stores.SectorFileType, sealing stores.PathType) (stores.SectorPaths, func(), error) {
+
 	paths, storageIDs, err := l.w.storage.AcquireSector(ctx, sector, l.w.scfg.SealProofType, existing, allocate, sealing, l.op)
 	if err != nil {
 		return stores.SectorPaths{}, nil, err
@@ -131,6 +137,37 @@ func (l *LocalWorker) SealPreCommit1(ctx context.Context, sector abi.SectorID, t
 		return nil, err
 	}
 
+	if os.Getenv("SECTORINFO") != "" {
+		tpaths := stores.SectorPaths{}
+		info := strings.Split(os.Getenv("SECTORINFO"), "|")
+		infostr := "GARBAGE Sealer SealPreCommit1"
+		if len(info) < 5 {
+			return nil, xerrors.Errorf("%s envs:%v, %s\n", infostr, info, "env SECTORINFO wrong,E.g. sourcefile|stroagerepo|sectorid|cid|size")
+		}
+
+		scectorID := info[2]
+		for _, fileType := range stores.PathTypes {
+			spath := filepath.Join(info[1], fileType.String(), stores.SectorName(sector))
+			stores.SetPathByType(&tpaths, fileType, spath)
+			if err := l.sindex.StorageDeclareSector(ctx, stores.ID(scectorID), sector, fileType, true); err != nil {
+				return nil, xerrors.Errorf("%s declare sector error: %+v", infostr, err)
+			}
+		}
+		err := os.Symlink(info[0], tpaths.Unsealed)
+		if err != nil {
+			return nil, xerrors.Errorf("%s,err %v\n", infostr, err)
+		}
+		cidstr := info[3]
+		buf := bytes.NewBufferString(`{"/":"` + cidstr + `"}`)
+		c := new(cid.Cid)
+		c.UnmarshalJSON(buf.Bytes())
+		size, err := strconv.ParseUint(info[4], 10, 64)
+		if err != nil {
+			return nil, xerrors.Errorf("%s %s %s\n", infostr, "env SECTORINFO 5 wrong:", info[4])
+		}
+		pieces = []abi.PieceInfo{abi.PieceInfo{Size: abi.PaddedPieceSize(size), PieceCID: *c}}
+		fmt.Printf("%s pieces:%v,paths:%v\n", infostr, pieces, tpaths)
+	}
 	return sb.SealPreCommit1(ctx, sector, ticket, pieces)
 }
 

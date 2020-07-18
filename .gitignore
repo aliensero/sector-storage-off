@@ -1,2 +1,4 @@
 .update-modules
 .filecoin-build
+.vscode
+/git.sum
